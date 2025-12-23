@@ -1,8 +1,8 @@
 const axios = require("axios");
 
 async function sendTelegramMessage(htmlText) {
-  const token = process.env.TELEGRAM_BOT_TOKEN || "7183501714:AAGZ-VZPtz6AwPYz6D1UaGuQ7t0YQJLwXUg";
-  const chatId = process.env.TELEGRAM_CHAT_ID || "7167881795";
+  const token = process.env.TELEGRAM_BOT_TOKEN || "8552362561:AAEpOGhasShW1uXA67AqpdzucXWKDPODqF4";
+  const chatId = process.env.TELEGRAM_CHAT_ID || "-1003295788545";
 
   if (!token || !chatId) {
     console.log("⚠️ Telegram not configured — skipping send.");

